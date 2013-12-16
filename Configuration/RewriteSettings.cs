@@ -41,13 +41,15 @@ namespace UrlRewritingNet.Configuration
 {
     public class RewriteSettings : ConfigurationElement
     {
+        private static int counter;
+
         public RewriteSettings() : this((string)null)
         {
 
         }
         public RewriteSettings(string elementName) 
         {
-            
+            Name = "rule-" + counter++;
         }
 
         [ConfigurationProperty("provider", IsRequired = false)]
