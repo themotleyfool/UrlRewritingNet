@@ -131,65 +131,53 @@ namespace UrlRewritingNet.Web
         private bool RedirectUrl(HttpApplication app)
         {
             string requestUrl;
-            bool redirected = false;
-            // First, checking for Redirects
-            lockRedirects.AcquireReaderLock(0);
-            foreach (RewriteRule rewrite in Redirects)
+
+            var matchedRule = FindFirstMatch(app, out requestUrl, Redirects, lockRedirects);
+
+            if (matchedRule == null) return false;
+
+            bool includeQueryStringForRewrite = (matchedRule.RewriteUrlParameter & RewriteUrlParameterOption.IncludeQueryStringForRewrite) != 0;
+
+            string urlForRewrite = requestUrl;
+            string requestQuerystring = string.Empty;
+            int pos = requestUrl.IndexOf('?');
+            if (!includeQueryStringForRewrite && pos >= 0)
             {
-                if (rewrite.Redirect == RedirectOption.Domain)
-                    requestUrl = app.Request.Url.AbsoluteUri;
-                else
-                    requestUrl = app.Request.RawUrl;
-
-                if (rewrite.IsRewrite(requestUrl))
-                {
-                    bool includeQueryStringForRewrite = (rewrite.RewriteUrlParameter & RewriteUrlParameterOption.IncludeQueryStringForRewrite) != 0;
-
-                    string urlForRewrite = requestUrl;
-                    string requestQuerystring = string.Empty;
-                    int pos = requestUrl.IndexOf('?');
-                    if (!includeQueryStringForRewrite && pos >= 0)
-                    {
-                        requestQuerystring = requestUrl.Substring(pos + 1);
-                        urlForRewrite = requestUrl.Substring(0, pos);
-                    }
-                    string destinationUrl = rewrite.RewriteUrl(urlForRewrite);
-
-                    if (includeQueryStringForRewrite)
-                        destinationUrl = urlHelper.HandleRootOperator(destinationUrl);
-                    else
-                        destinationUrl = JoinUrlParameter(urlHelper.HandleRootOperator(destinationUrl), requestQuerystring);
-
-                    StringBuilder sb = new StringBuilder();
-
-                    if (rewrite.Redirect == RedirectOption.Domain)
-                    {
-                        sb.Append(destinationUrl);
-                    }
-                    else
-                    {
-                        sb.Append(app.Request.Url.Scheme);
-                        sb.Append("://");
-                        sb.Append(app.Request.Url.Authority);
-                        sb.Append(destinationUrl);
-                    }
-
-                    // Nur für den Fall, dass die Weiterleitung explizit auf permanent
-                    // gestellt ist, 301 festlegen - sonst kann das Konsequenzen haben
-                    if (rewrite.RedirectMode == RedirectModeOption.Permanent)
-                        app.Response.StatusCode = 301;
-                    else
-                        app.Response.StatusCode = 302;
-
-                    // Location MUST be absolut.
-                    app.Response.AddHeader("Location", sb.ToString());
-                    app.Response.End();
-                    redirected = true;
-                    break;
-                }
+                requestQuerystring = requestUrl.Substring(pos + 1);
+                urlForRewrite = requestUrl.Substring(0, pos);
             }
-            lockRedirects.ReleaseReaderLock();
-            return redirected;
+            string destinationUrl = matchedRule.RewriteUrl(urlForRewrite);
+
+            if (includeQueryStringForRewrite)
+                destinationUrl = urlHelper.HandleRootOperator(destinationUrl);
+            else
+                destinationUrl = JoinUrlParameter(urlHelper.HandleRootOperator(destinationUrl), requestQuerystring);
+
+            StringBuilder sb = new StringBuilder();
+
+            if (matchedRule.Redirect == RedirectOption.Domain)
+            {
+                sb.Append(destinationUrl);
+            }
+            else
+            {
+                sb.Append(app.Request.Url.Scheme);
+                sb.Append("://");
+                sb.Append(app.Request.Url.Authority);
+                sb.Append(destinationUrl);
+            }
+
+            // Nur für den Fall, dass die Weiterleitung explizit auf permanent
+            // gestellt ist, 301 festlegen - sonst kann das Konsequenzen haben
+            if (matchedRule.RedirectMode == RedirectModeOption.Permanent)
+                app.Response.StatusCode = 301;
+            else
+                app.Response.StatusCode = 302;
+
+            // Location MUST be absolut.
+            app.Response.AddHeader("Location", sb.ToString());
+            app.Response.End();
+            return true;
         }
 
         /// <summary>
@@ -199,69 +187,86 @@ namespace UrlRewritingNet.Web
         private bool RewriteUrl(HttpApplication app)
         {
             string requestUrl;
-            bool rewritten = false;
-            // Do the Rewrites
-            lockRewrites.AcquireReaderLock(0);
-            foreach (RewriteRule rewrite in Rewrites)
+
+            var matchedRule = FindFirstMatch(app, out requestUrl, Rewrites, lockRewrites);
+
+            if (matchedRule == null) return false;
+
+            bool includeQueryStringForRewrite = (matchedRule.RewriteUrlParameter & RewriteUrlParameterOption.IncludeQueryStringForRewrite) != 0;
+
+            string urlForRewrite = requestUrl;
+            string requestQuerystring = string.Empty;
+            int pos = requestUrl.IndexOf('?');
+            if (!includeQueryStringForRewrite && pos >= 0)
             {
-                if ((rewrite.Rewrite & RewriteOption.Domain) != 0)
-                    requestUrl = app.Request.Url.AbsoluteUri;
-                else
-                    requestUrl = app.Request.RawUrl;
+                requestQuerystring = requestUrl.Substring(pos + 1);
+                urlForRewrite = requestUrl.Substring(0, pos);
+            }
 
-                if (rewrite.IsRewrite(requestUrl))
+            app.Context.Items[ItemsClientQueryString] = requestQuerystring;
+            app.Context.Items[ItemsRewriteUrlParameter] = matchedRule.RewriteUrlParameter;
+
+            if ((matchedRule.Rewrite & RewriteOption.Domain) != 0)
+            {
+                // Remove domain if exists
+                int slashPos = requestUrl.IndexOf("://");
+                if (slashPos > 0)
                 {
-                    bool includeQueryStringForRewrite = (rewrite.RewriteUrlParameter & RewriteUrlParameterOption.IncludeQueryStringForRewrite) != 0;
-
-                    string urlForRewrite = requestUrl;
-                    string requestQuerystring = string.Empty;
-                    int pos = requestUrl.IndexOf('?');
-                    if (!includeQueryStringForRewrite && pos >= 0)
+                    slashPos = requestUrl.IndexOf("/", slashPos + 3);
+                    if (slashPos > 0)
                     {
-                        requestQuerystring = requestUrl.Substring(pos + 1);
-                        urlForRewrite = requestUrl.Substring(0, pos);
+                        app.Context.Items[ItemsVirtualUrl] = requestUrl.Substring(slashPos);
                     }
-
-                    app.Context.Items[ItemsClientQueryString] = requestQuerystring;
-                    app.Context.Items[ItemsRewriteUrlParameter] = rewrite.RewriteUrlParameter;
-
-                    if ((rewrite.Rewrite & RewriteOption.Domain) != 0)
-                    {
-                        // Remove domain if exists
-                        int slashPos = requestUrl.IndexOf("://");
-                        if (slashPos > 0)
-                        {
-                            slashPos = requestUrl.IndexOf("/", slashPos + 3);
-                            if (slashPos > 0)
-                            {
-                                app.Context.Items[ItemsVirtualUrl] = requestUrl.Substring(slashPos);
-                            }
-                        }
-                    }
-                    else
-                    {
-                        app.Context.Items[ItemsVirtualUrl] = requestUrl;
-
-                    }
-
-                    string destinationUrl = rewrite.RewriteUrl(urlForRewrite);
-
-
-                    if (includeQueryStringForRewrite)
-                        destinationUrl = urlHelper.HandleRootOperator(destinationUrl);
-                    else
-                        destinationUrl = JoinUrlParameter(urlHelper.HandleRootOperator(destinationUrl), requestQuerystring);
-                    // Save original querystring, url and rewrite-parameters for OnPagePreInit()
-
-                    app.Response.StatusCode = 200;
-                    app.Context.RewritePath(destinationUrl, false);
-                    rewritten = true;
-                    break;
                 }
             }
-            lockRewrites.ReleaseReaderLock();
-            return rewritten;
+            else
+            {
+                app.Context.Items[ItemsVirtualUrl] = requestUrl;
+
+            }
+
+            string destinationUrl = matchedRule.RewriteUrl(urlForRewrite);
+
+
+            if (includeQueryStringForRewrite)
+                destinationUrl = urlHelper.HandleRootOperator(destinationUrl);
+            else
+                destinationUrl = JoinUrlParameter(urlHelper.HandleRootOperator(destinationUrl), requestQuerystring);
+            // Save original querystring, url and rewrite-parameters for OnPagePreInit()
+
+            app.Response.StatusCode = 200;
+            app.Context.RewritePath(destinationUrl, false);
+            return true;
         }
+
+        internal virtual RewriteRule FindFirstMatch(HttpApplication app, out string requestUrl, RewriteRuleCollection rules, ReaderWriterLock ruleCollectionLock)
+        {
+            requestUrl = null;
+            RewriteRule matchedRule = null;
+            ruleCollectionLock.AcquireReaderLock(0);
+            try
+            {
+                foreach (var rule in rules)
+                {
+                    if ((rule.Rewrite & RewriteOption.Domain) != 0)
+                        requestUrl = app.Request.Url.AbsoluteUri;
+                    else
+                        requestUrl = app.Request.RawUrl;
+
+                    if (rule.IsRewrite(requestUrl))
+                    {
+                        matchedRule = rule;
+                        break;
+                    }
+                }
+            }
+            finally
+            {
+                ruleCollectionLock.ReleaseReaderLock();
+            }
+            return matchedRule;
+        }
+
         /// <summary>
         /// Called when [begin request].
         /// </summary>
